@@ -127,6 +127,7 @@ if (yamlObject.include) {
                 index = readlineSync.keyInSelect(yamlObject.stages, `Select a stage to execute ?`, {
                     cancel: `${CBRIGHT}None${CRESET} - (Escape)`
                 })
+                optCMD = yamlObject.stages[index]
             } else {
                 index = yamlObject.stages.indexOf(optCMD)
             }
@@ -207,7 +208,7 @@ if (yamlObject.include) {
                 let dockerComposePath = `${projectName}/docker-compose.${executedStage}.yml`
                 fs.writeFileSync(dockerComposePath, YAML.stringify(dockerComposeContent))
                 console.log(`Created ${projectName} docker-compose for stage '${optCMD}' cached to '${projectName}' volume`)
-                fs.writeFileSync(`pipeline.bash`, [
+                fs.writeFileSync(`pipeline.sh`, [
                     '#!/bin/bash',
                     `cd ${projectName}`,
                     `docker volume rm ${projectName.replace(/\./g, '')}_shared > /dev/null`,
