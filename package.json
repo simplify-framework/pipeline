@@ -2,9 +2,9 @@
   "name": "simplify-pipeline",
   "version": "0.1.0",
   "description": "Simplify CLI - Easy Pipeline",
-  "main": "pipeline.js",
+  "main": "index.js",
   "bin": {
-    "simplify-pipeline": "pipeline.js"
+    "simplify-pipeline": "index.js"
   },
   "scripts": {},
   "repository": {
