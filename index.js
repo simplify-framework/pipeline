@@ -74,7 +74,7 @@ function parseIncludes(yamlObject) {
                 var bb = new BlobBuilder();
                 bb.append(buf);
                 var f = new FileReader();
-                f.onload = function(e) {
+                f.onload = function (e) {
                     callback(e.target.result)
                 }
                 f.readAsText(bb.getBlob());
@@ -88,18 +88,18 @@ function parseIncludes(yamlObject) {
                         });
                     });
                 }).then((finalObjects) => {
-                    yamlObject.stages = [ ...new Set(stages)] 
+                    yamlObject.stages = [...new Set(stages)]
                     finalObjects.map(m => {
                         if (m.stages) {
                             stages = [...stages, ...m.stages]
                         }
                         yamlObject = { ...yamlObject, ...m }
                     })
-                    yamlObject.stages = [ ...new Set(stages)] 
+                    yamlObject.stages = [...new Set(stages)]
                     resolve(yamlObject)
                 });
             } else {
-                yamlObject.stages = [ ...new Set(stages)] 
+                yamlObject.stages = [...new Set(stages)]
                 resolve(yamlObject)
             }
         } else {
@@ -168,11 +168,11 @@ if (yamlObject.include) {
                         let dockerCommands = []
                         let dockerBeforeCommands = []
 
-                        simplify.getContentArgs(yamlObject[key].before_script, { ...process.env }, { ...variables }).map(script => {
-                            let scriptContent = script
-                            if (script.startsWith('export ')) {
-                                let dockerOpts = 'ENV'
-                                scriptContent = script.replace('export ', '')
+                        yamlObject[key].before_script.map(script => {
+                            let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
+                            if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
+                                let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
+                                scriptContent = scriptContent.replace('export ', '').replace('set ', '')
                                 const argKeyValue = scriptContent.split('=')
                                 dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
                                 scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
@@ -182,11 +182,11 @@ if (yamlObject.include) {
                             }
                         })
 
-                        simplify.getContentArgs(yamlObject[key].script, { ...process.env }, { ...variables }).map(script => {
-                            let scriptContent = script
-                            if (script.startsWith('export ')) {
-                                let dockerOpts = 'ENV'
-                                scriptContent = script.replace('export ', '')
+                        yamlObject[key].script.map(script => {
+                            let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
+                            if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
+                                let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
+                                scriptContent = scriptContent.replace('export ', '').replace('set ', '')
                                 const argKeyValue = scriptContent.split('=')
                                 dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
                                 scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
