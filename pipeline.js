@@ -44,7 +44,8 @@ const getOptionDesc = function (cmdOpt, optName) {
 
 var argv = yargs.usage('simplify-pipeline create|list [stage] [options]')
     .string('help').describe('help', 'display help for a specific command')
-    .string('project').describe('project', getOptionDesc('create', 'project'))
+    .string('project').alias('p', 'project').describe('project', getOptionDesc('create', 'project'))
+    .string('file').alias('f', 'file').describe('file', getOptionDesc('file', 'file'))
     .demandCommand(1).argv;
 
 showBoxBanner()
@@ -52,9 +53,13 @@ showBoxBanner()
 var cmdOPS = (argv._[0] || 'create').toUpperCase()
 var optCMD = (argv._.length > 1 ? argv._[1] : undefined)
 var index = -1
-const filename = '.gitlab-ci'
+const filename = argv['file'] || '.gitlab-ci.yml'
 const projectName = argv['project'] || '.simplify-pipeline'
-const file = fs.readFileSync(path.resolve(__dirname, `${filename}.yml`), 'utf8')
+if (!fs.existsSync(path.resolve(`${filename}`))) {
+    console.error(path.resolve(`${filename}`) + ' not found!')
+    process.exit()
+}
+const file = fs.readFileSync(path.resolve(`${filename}`), 'utf8')
 const yamlObject = YAML.parse(file)
 if (cmdOPS == 'CREATE') {
     if (!optCMD) {
