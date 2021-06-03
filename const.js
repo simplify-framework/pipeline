@@ -3,12 +3,12 @@ const CRESET = '\x1b[0m'
 
 const OPT_COMMANDS = [
     {
-        name: "list", desc: "list all options of the service", options: [
+        name: "list", desc: "list all stages of this pipeline", options: [
             { name: "help", desc: "show a help for the list command" }
         ]
     }, {
-        name: "create", desc: "create a service", options: [
-            { name: "help", desc: "show a help for the create command" }
+        name: "create", desc: "create docker-compose.yml for a selected stage", options: [
+            { name: "project", desc: "specify a project name for volume caching" }
         ]
     }
 ]
