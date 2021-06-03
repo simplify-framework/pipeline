@@ -45,7 +45,7 @@ const getOptionDesc = function (cmdOpt, optName) {
 var argv = yargs.usage('simplify-pipeline create|list [stage] [options]')
     .string('help').describe('help', 'display help for a specific command')
     .string('project').alias('p', 'project').describe('project', getOptionDesc('create', 'project'))
-    .string('file').alias('f', 'file').describe('file', getOptionDesc('file', 'file'))
+    .string('file').alias('f', 'file').describe('file', getOptionDesc('list', 'file'))
     .demandCommand(1).argv;
 
 showBoxBanner()
@@ -73,7 +73,7 @@ if (cmdOPS == 'CREATE') {
     if (index >= 0) {
         const executedStage = yamlObject.stages[index]
         let dockerComposeContent = { version: '3.8', services: {}, volumes: {} }
-        dockerComposeContent.volumes[`${projectName}`] = {
+        dockerComposeContent.volumes[`shared`] = {
             "driver": "local",
             "driver_opts": {
                 "type": "none",
@@ -85,7 +85,7 @@ if (cmdOPS == 'CREATE') {
         let dockerCacheVolumes = []
         let dockerBaseContent = [`FROM ${yamlObject.image}`, 'WORKDIR /source', 'VOLUME /source', 'COPY . /source']
         let dockerBasePath = `${projectName}/Dockerfile`
-        const baseImage = `base-${projectName.replace(/\./g, '')}`
+        const baseImage = `base-${yamlObject.image.split(':')[0]}`
         const baseDirName = path.dirname(path.resolve(dockerBasePath))
         if (!fs.existsSync(baseDirName)) {
             fs.mkdirSync(baseDirName, { recursive: true })
@@ -100,10 +100,26 @@ if (cmdOPS == 'CREATE') {
         Object.keys(yamlObject).map((key, idx) => {
             if (yamlObject[key].stage === executedStage) {
                 const stageName = `${idx}-${executedStage}.${key}`
-                dockerComposeContent.services[key] = { build: { context: `../`, dockerfile: `${projectName}/${stageName}.Dockerfile`, args: {} }, volumes: [`${projectName}:/source`] }
+                dockerComposeContent.services[key] = { build: { context: `../`, dockerfile: `${projectName}/${stageName}.Dockerfile`, args: {} }, volumes: [`shared:/source`] }
                 stageExecutionChains.push(`${stageName}`)
                 dockerfileContent = [`FROM ${projectName.replace(/\./g, '')}_${baseImage}`, 'WORKDIR /source']
                 let dockerCommands = []
+                let dockerBeforeCommands = []
+
+                simplify.getContentArgs(yamlObject[key].before_script, { ...process.env }, { ...variables }).map(script => {
+                    let scriptContent = script
+                    if (script.startsWith('export ')) {
+                        let dockerOpts = 'ENV'
+                        scriptContent = script.replace('export ', '')
+                        const argKeyValue = scriptContent.split('=')
+                        dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
+                        scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
+                        dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
+                    } else {
+                        dockerBeforeCommands.push(`${scriptContent}`)
+                    }
+                })
+
                 simplify.getContentArgs(yamlObject[key].script, { ...process.env }, { ...variables }).map(script => {
                     let scriptContent = script
                     if (script.startsWith('export ')) {
@@ -114,10 +130,11 @@ if (cmdOPS == 'CREATE') {
                         scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
                         dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
                     } else {
-                        dockerCommands.push(`RUN ${scriptContent}`)
+                        dockerCommands.push(`${scriptContent}`)
                     }
                 })
-                dockerfileContent.push(`${dockerCommands.join('\n')}`)
+                dockerfileContent.push(`RUN ${dockerBeforeCommands.join(' && ')}`)
+                dockerfileContent.push(`RUN ${dockerCommands.join(' && ')}`)
                 let dockerfilePath = `${projectName}/${stageName}.Dockerfile`
                 const pathDirName = path.dirname(path.resolve(dockerfilePath))
                 if (!fs.existsSync(pathDirName)) {
@@ -132,7 +149,8 @@ if (cmdOPS == 'CREATE') {
         fs.writeFileSync(`pipeline.bash`, [
             '#!/bin/bash',
             `cd ${projectName}`,
-            `docker-compose -f docker-compose.$1.yml up --force-recreate`
+            `docker volume rm ${projectName.replace(/\./g,'')}_shared > /dev/null`,
+            `docker-compose -f docker-compose.$1.yml --project-name ${projectName} up --force-recreate`
         ].join('\n'))
     }
 } else if (cmdOPS == 'LIST') {
