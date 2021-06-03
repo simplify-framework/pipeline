@@ -1,25 +1,28 @@
 {
-  "name": "simplify-sample",
+  "name": "simplify-pipeline",
   "version": "0.1.0",
-  "description": "Simplify - Easy Sample",
-  "main": "sample.js",
+  "description": "Simplify CLI - Easy Pipeline",
+  "main": "pipeline.js",
   "bin": {
-    "simplify-sample": "sample.js"
+    "simplify-pipeline": "pipeline.js"
   },
   "scripts": {},
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/simplify-framework/sample.git"
+    "url": "git+https://github.com/simplify-framework/pipeline.git"
   },
   "keywords": [
-    "simplify-framework"
+    "simplify-framework",
+    "pipeline",
+    "gitlab",
+    "github"
   ],
   "author": "Duong Dinh Cuong",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/simplify-framework/sample/issues"
+    "url": "https://github.com/simplify-framework/pipeline/issues"
   },
-  "homepage": "https://github.com/simplify-framework/sample#readme",
+  "homepage": "https://github.com/simplify-framework/pipeline#readme",
   "dependencies": {
     "dotenv": "^8.2.0",
     "readline-sync": "^1.4.10",
