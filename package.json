@@ -1,6 +1,6 @@
 {
   "name": "simplify-pipeline",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Simplify CLI - Easy Pipeline",
   "main": "index.js",
   "bin": {
