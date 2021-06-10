@@ -119,123 +119,152 @@ if (!fs.existsSync(path.resolve(`${filename}`))) {
 }
 const file = fs.readFileSync(path.resolve(`${filename}`), 'utf8')
 let yamlObject = YAML.parse(file)
+function getVolumeName(projectName) {
+    return projectName.replace(/[&\/\\#,+()$~%.'":*?<>{}]/g,'')
+}
+const yamlProcessor = function (result) {
+    yamlObject = result
+    if (cmdOPS == 'CREATE') {
+        if (!optCMD) {
+            index = readlineSync.keyInSelect(yamlObject.stages, `Select a stage to execute ?`, {
+                cancel: `${CBRIGHT}None${CRESET} - (Escape)`
+            })
+            optCMD = yamlObject.stages[index]
+        } else {
+            index = yamlObject.stages.indexOf(optCMD)
+        }
+        let dockerfileContent = ['FROM scratch']
+        if (index >= 0) {
+            const executedStage = yamlObject.stages[index]
+            let dockerComposeContent = { version: '3.8', services: {}, volumes: {} }
+            dockerComposeContent.volumes[`${getVolumeName(projectName)}`] = { external: true }
+            let stageExecutionChains = []
+            let dockerCacheVolumes = []
+            let dockerBaseContent = [`FROM ${yamlObject.image}`, 'WORKDIR /source', 'VOLUME /data', 'COPY . /source', 'CMD ls -la /source']
+            let dockerBasePath = `${projectName}/Dockerfile`
+            const baseImage = `base-${yamlObject.image.split(':')[0]}`
+            const baseDirName = path.dirname(path.resolve(dockerBasePath))
+            if (!fs.existsSync(baseDirName)) {
+                fs.mkdirSync(baseDirName, { recursive: true })
+            }
+            if (yamlObject.cache && yamlObject.cache.paths && yamlObject.cache.paths.length) {
+                dockerCacheVolumes.push()
+            }
+            fs.writeFileSync(dockerBasePath, dockerBaseContent.join('\n'))
+            dockerComposeContent.services[baseImage] = { build: { context: `../`, dockerfile: `${projectName}/Dockerfile`, args: {} } }
+            fs.writeFileSync(`${projectName}/docker-compose.yml`, YAML.stringify(dockerComposeContent))
+
+            dockerComposeContent.services = {} /** reset docker-compose services section */
+            delete dockerComposeContent.volumes /** remove docker-compose volumes section */
+            const variables = simplify.getContentArgs(yamlObject.variables || {}, { ...process.env })
+            Object.keys(yamlObject).map((key, idx) => {
+                if (yamlObject[key].stage === executedStage) {
+                    const stageName = `${idx}-${executedStage}.${key}`
+                    dockerComposeContent.services[key] = { build: { context: `../`, dockerfile: `${projectName}/${stageName}.Dockerfile`, args: {} }, volumes: [`${getVolumeName(projectName)}:/data`] }
+                    stageExecutionChains.push(`${stageName}`)
+                    dockerfileContent = [`FROM ${projectName.replace(/\./g, '')}_${baseImage}`, 'WORKDIR /source']
+                    yamlObject[key].dependencies && yamlObject[key].dependencies.map(deps => {
+                        dockerfileContent.push(`FROM ${projectName.replace(/\./g, '')}_${deps}`)
+                    })
+                    let dockerCommands = []
+                    let dockerBeforeCommands = []
+                    let dockerAfterCommands = []
+                    yamlObject[key].before_script && yamlObject[key].before_script.map(script => {
+                        let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
+                        if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
+                            let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
+                            scriptContent = scriptContent.replace('export ', '').replace('set ', '')
+                            const argKeyValue = scriptContent.split('=')
+                            dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
+                            scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
+                            dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
+                        } else {
+                            dockerBeforeCommands.push(`${scriptContent}`)
+                        }
+                    })
+
+                    yamlObject[key].script && yamlObject[key].script.map(script => {
+                        let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
+                        if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
+                            let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
+                            scriptContent = scriptContent.replace('export ', '').replace('set ', '')
+                            const argKeyValue = scriptContent.split('=')
+                            dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
+                            scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
+                            dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
+                        } else {
+                            dockerCommands.push(`${scriptContent}`)
+                        }
+                    })
+                    yamlObject[key].after_script && yamlObject[key].after_script.map(script => {
+                        let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
+                        if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
+                            let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
+                            scriptContent = scriptContent.replace('export ', '').replace('set ', '')
+                            const argKeyValue = scriptContent.split('=')
+                            dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
+                            scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
+                            dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
+                        } else {
+                            dockerAfterCommands.push(`${scriptContent}`)
+                        }
+                    })
+
+                    dockerBeforeCommands.length && dockerfileContent.push(`RUN ${dockerBeforeCommands.join(' && ')}`)
+                    dockerCommands.length && dockerfileContent.push(`RUN ${dockerCommands.join(' && ')}`)
+                    dockerAfterCommands.length && dockerfileContent.push(`RUN ${dockerAfterCommands.join(' && ')}`)
+                    let dockerfilePath = `${projectName}/${stageName}.Dockerfile`
+                    const pathDirName = path.dirname(path.resolve(dockerfilePath))
+                    if (!fs.existsSync(pathDirName)) {
+                        fs.mkdirSync(pathDirName, { recursive: true })
+                    }
+                    fs.writeFileSync(dockerfilePath, dockerfileContent.join('\n'))
+                }
+            })
+            let dockerComposePath = `${projectName}/docker-compose.${executedStage}.yml`
+            fs.writeFileSync(dockerComposePath, YAML.stringify(dockerComposeContent))
+            console.log(`Created ${projectName} docker-compose for stage '${optCMD}' cached to '${projectName}' volume`)
+            fs.writeFileSync(`pipeline.sh`, [
+                '#!/bin/bash',
+                `cd ${projectName}`,
+                `DOCKER_VOLUME=$(docker volume ls | grep -w "${getVolumeName(projectName)}")`,
+                'if [ -z "${DOCKER_VOLUME}" ]; then',
+                `   echo "Creating new volume: ${getVolumeName(projectName)}"`,
+                `   docker volume create --driver local --opt type=none --opt device=$PWD --opt o=bind ${getVolumeName(projectName)};`,
+                `fi`,
+                `if [ $? -eq 0 ]; then`,
+                `   if [ -z "$1" ]; then echo "Missing argument: require stage argument to run - ex bash pipeline.sh build";`,
+                `   else docker-compose -f docker-compose.yml -f docker-compose.$1.yml --project-name ${projectName} build; fi`,
+                `fi`
+            ].join('\n'))
+        }
+    } else if (cmdOPS == 'LIST') {
+        if (!optCMD) {
+            yamlObject.stages.map((cmd, idx) => {
+                console.log(`\t- ${CPROMPT}${cmd.toLowerCase()}${CRESET}`)
+            })
+        } else {
+            Object.keys(yamlObject).map((key, idx) => {
+                if (yamlObject[key].stage === optCMD) {
+                    const stageName = `[${optCMD}] ${key}`
+                    console.log(`\t- ${CPROMPT}${stageName.toLowerCase()}${CRESET}`)
+                }
+            })
+        }
+    } else {
+        yargs.showHelp()
+        console.log(`\n`, ` * ${CBRIGHT}Supported command list${CRESET}:`, '\n')
+        OPT_COMMANDS.map((cmd, idx) => {
+            console.log(`\t- ${CPROMPT}${cmd.name.toLowerCase()}${CRESET} : ${cmd.desc}`)
+        })
+        console.log(`\n`)
+        process.exit(0)
+    }
+}
 if (yamlObject.include) {
     parseIncludes(yamlObject).then(result => {
-        yamlObject = result
-        if (cmdOPS == 'CREATE') {
-            if (!optCMD) {
-                index = readlineSync.keyInSelect(yamlObject.stages, `Select a stage to execute ?`, {
-                    cancel: `${CBRIGHT}None${CRESET} - (Escape)`
-                })
-                optCMD = yamlObject.stages[index]
-            } else {
-                index = yamlObject.stages.indexOf(optCMD)
-            }
-            let dockerfileContent = ['FROM scratch']
-            if (index >= 0) {
-                const executedStage = yamlObject.stages[index]
-                let dockerComposeContent = { version: '3.8', services: {}, volumes: {} }
-                dockerComposeContent.volumes[`shared`] = {
-                    "driver": "local",
-                    "driver_opts": {
-                        "type": "none",
-                        "device": "$PWD",
-                        "o": "bind"
-                    }
-                }
-                let stageExecutionChains = []
-                let dockerCacheVolumes = []
-                let dockerBaseContent = [`FROM ${yamlObject.image}`, 'WORKDIR /source', 'VOLUME /source', 'COPY . /source']
-                let dockerBasePath = `${projectName}/Dockerfile`
-                const baseImage = `base-${yamlObject.image.split(':')[0]}`
-                const baseDirName = path.dirname(path.resolve(dockerBasePath))
-                if (!fs.existsSync(baseDirName)) {
-                    fs.mkdirSync(baseDirName, { recursive: true })
-                }
-                if (yamlObject.cache && yamlObject.cache.paths && yamlObject.cache.paths.length) {
-                    dockerCacheVolumes.push()
-                }
-                fs.writeFileSync(dockerBasePath, dockerBaseContent.join('\n'))
-                dockerComposeContent.services[baseImage] = { build: { context: `../`, dockerfile: `${projectName}/Dockerfile`, args: {} } }
-
-                const variables = simplify.getContentArgs(yamlObject.variables, { ...process.env })
-                Object.keys(yamlObject).map((key, idx) => {
-                    if (yamlObject[key].stage === executedStage) {
-                        const stageName = `${idx}-${executedStage}.${key}`
-                        dockerComposeContent.services[key] = { build: { context: `../`, dockerfile: `${projectName}/${stageName}.Dockerfile`, args: {} }, volumes: [`shared:/source`] }
-                        stageExecutionChains.push(`${stageName}`)
-                        dockerfileContent = [`FROM ${projectName.replace(/\./g, '')}_${baseImage}`, 'WORKDIR /source']
-                        let dockerCommands = []
-                        let dockerBeforeCommands = []
-
-                        yamlObject[key].before_script.map(script => {
-                            let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
-                            if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
-                                let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
-                                scriptContent = scriptContent.replace('export ', '').replace('set ', '')
-                                const argKeyValue = scriptContent.split('=')
-                                dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
-                                scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
-                                dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
-                            } else {
-                                dockerBeforeCommands.push(`${scriptContent}`)
-                            }
-                        })
-
-                        yamlObject[key].script.map(script => {
-                            let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
-                            if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
-                                let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
-                                scriptContent = scriptContent.replace('export ', '').replace('set ', '')
-                                const argKeyValue = scriptContent.split('=')
-                                dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
-                                scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
-                                dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
-                            } else {
-                                dockerCommands.push(`${scriptContent}`)
-                            }
-                        })
-                        dockerfileContent.push(`RUN ${dockerBeforeCommands.join(' && ')}`)
-                        dockerfileContent.push(`RUN ${dockerCommands.join(' && ')}`)
-                        let dockerfilePath = `${projectName}/${stageName}.Dockerfile`
-                        const pathDirName = path.dirname(path.resolve(dockerfilePath))
-                        if (!fs.existsSync(pathDirName)) {
-                            fs.mkdirSync(pathDirName, { recursive: true })
-                        }
-                        fs.writeFileSync(dockerfilePath, dockerfileContent.join('\n'))
-                    }
-                })
-                let dockerComposePath = `${projectName}/docker-compose.${executedStage}.yml`
-                fs.writeFileSync(dockerComposePath, YAML.stringify(dockerComposeContent))
-                console.log(`Created ${projectName} docker-compose for stage '${optCMD}' cached to '${projectName}' volume`)
-                fs.writeFileSync(`pipeline.sh`, [
-                    '#!/bin/bash',
-                    `cd ${projectName}`,
-                    `docker volume rm ${projectName.replace(/\./g, '')}_shared > /dev/null`,
-                    `docker-compose -f docker-compose.$1.yml --project-name ${projectName} up --force-recreate`
-                ].join('\n'))
-            }
-        } else if (cmdOPS == 'LIST') {
-            if (!optCMD) {
-                yamlObject.stages.map((cmd, idx) => {
-                    console.log(`\t- ${CPROMPT}${cmd.toLowerCase()}${CRESET}`)
-                })
-            } else {
-                Object.keys(yamlObject).map((key, idx) => {
-                    if (yamlObject[key].stage === optCMD) {
-                        const stageName = `[${optCMD}] ${key}`
-                        console.log(`\t- ${CPROMPT}${stageName.toLowerCase()}${CRESET}`)
-                    }
-                })
-            }
-        } else {
-            yargs.showHelp()
-            console.log(`\n`, ` * ${CBRIGHT}Supported command list${CRESET}:`, '\n')
-            OPT_COMMANDS.map((cmd, idx) => {
-                console.log(`\t- ${CPROMPT}${cmd.name.toLowerCase()}${CRESET} : ${cmd.desc}`)
-            })
-            console.log(`\n`)
-            process.exit(0)
-        }
+        yamlProcessor(result)
     })
+} else {
+    yamlProcessor(yamlObject)
 }
