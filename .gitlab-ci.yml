@@ -1,0 +1,26 @@
+
+image: node:lts-stretch
+stages:
+  - build
+  - test
+
+include:
+  - local: Security/SAST.gitlab-ci.yml
+  - template: Security/DAST.gitlab-ci.yml
+
+package-build:
+  stage: build
+  before_script:
+  - mkdir -p /root/.aws/
+  - echo "[default]" > /root/.aws/credentials
+  - echo "[default]" > /root/.aws/config
+  script:
+  - echo "TEST_FILE_CREAED-1" >> test-file.json
+
+package-test:
+  stage: test
+  dependencies:
+  - package-build
+  script:
+  - ls -la && cat test-file.json
+  - cat .gitlab-ci.yml
