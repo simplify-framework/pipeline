@@ -46,67 +46,11 @@ const getOptionDesc = function (cmdOpt, optName) {
 var argv = yargs.usage('simplify-pipeline create|list [stage] [options]')
     .string('help').describe('help', 'display help for a specific command')
     .string('project').alias('p', 'project').describe('project', getOptionDesc('create', 'project'))
-    .string('file').alias('f', 'file').describe('file', getOptionDesc('list', 'file'))
+    .string('file').alias('f', 'file').describe('file', getOptionDesc('list', 'file')).default('.gitlab-ci.yml')
     .demandCommand(1).argv;
 
 showBoxBanner()
 
-function parseIncludes(yamlObject) {
-    return new Promise((resolve, reject) => {
-        let stages = [...yamlObject.stages]
-        if (yamlObject.include) {
-            let remoteUrls = []
-            yamlObject.include.map(item => {
-                if (item.local) {
-                    if (fs.existsSync(path.resolve(item.local))) {
-                        const ymlObj = fs.readFileSync(path.resolve(item.local)).toString()
-                        const includedObj = YAML.parse(ymlObj)
-                        yamlObject = { ...yamlObject, ...includedObj }
-                        if (includedObj.stages) {
-                            stages = [...stages, ...includedObj.stages]
-                        }
-                    }
-                } else if (item.template) {
-                    remoteUrls.push(`https://gitlab.com/gitlab-org/gitlab/-/raw/master/lib/gitlab/ci/templates/${item.template}`)
-                }
-            })
-            function arrayBuffer2String(buf, callback) {
-                var bb = new BlobBuilder();
-                bb.append(buf);
-                var f = new FileReader();
-                f.onload = function (e) {
-                    callback(e.target.result)
-                }
-                f.readAsText(bb.getBlob());
-            }
-            /** fetching remote templates from GitLab... */
-            if (remoteUrls.length > 0) {
-                Promise.all(remoteUrls.map((url) => fetch(url))).then((responses) => {
-                    return Promise.all(responses.map((res) => res.text())).then((buffers) => {
-                        return buffers.map((buffer) => {
-                            return YAML.parse(buffer)
-                        });
-                    });
-                }).then((finalObjects) => {
-                    yamlObject.stages = [...new Set(stages)]
-                    finalObjects.map(m => {
-                        if (m.stages) {
-                            stages = [...stages, ...m.stages]
-                        }
-                        yamlObject = { ...yamlObject, ...m }
-                    })
-                    yamlObject.stages = [...new Set(stages)]
-                    resolve(yamlObject)
-                });
-            } else {
-                yamlObject.stages = [...new Set(stages)]
-                resolve(yamlObject)
-            }
-        } else {
-            resolve(yamlObject)
-        }
-    })
-}
 
 var cmdOPS = (argv._[0] || 'create').toUpperCase()
 var optCMD = (argv._.length > 1 ? argv._[1] : undefined)
@@ -120,10 +64,148 @@ if (!fs.existsSync(path.resolve(`${filename}`))) {
 const file = fs.readFileSync(path.resolve(`${filename}`), 'utf8')
 let yamlObject = YAML.parse(file)
 function getVolumeName(projectName) {
-    return projectName.replace(/[&\/\\#,+()$~%.'":*?<>{}]/g,'')
+    return projectName.replace(/[&\/\\#,+()$~%.'":*?<>{}]/g, '')
 }
-const yamlProcessor = function (result) {
-    yamlObject = result
+function getImageName(image) {
+    return typeof image === 'object' ? image.name : image
+}
+const getContentArgs = function (...args) {
+    var template = args.shift()
+    function parseVariables(v) {
+        args.forEach(function (a) {
+            if (typeof a === 'object') {
+                Object.keys(a).map(function (i) {
+                    if (a[i]) {
+                        v = v.replace(new RegExp('\\${' + i + '}', 'g'), a[i])
+                        const regxMatches = new RegExp('\\$' + i, 'g')
+                        const valueMatches = ('$' + i).match(regxMatches)
+                        if (valueMatches && valueMatches[0] === ('$' + i)) {
+                            v = v.replace(regxMatches, a[i])
+                        }
+                    }
+                })
+            } else {
+                v = v.replace(new RegExp('\\${' + a + '}', 'g'), a)
+                const regxMatches = new RegExp('^\\$' + a, 'g')
+                const valueMatches = ('$' + a).match(regxMatches)
+                if (valueMatches && valueMatches[0] === ('$' + a)) {
+                    v = v.replace(regxMatches, a)
+                }
+            }
+        })
+        Object.keys(process.env).map(function (e) {
+            v = v.replace(new RegExp('\\${' + e + '}', 'g'), process.env[e])
+            v = v.replace(new RegExp('\\$' + e, 'g'), process.env[e])
+        })
+        if (typeof args[args.length - 1] === 'boolean' && args[args.length - 1] === true) {
+            v = v.replace(new RegExp(/ *\{[^)]*\} */, 'g'), `(not set)`).replace(new RegExp('\\$', 'g'), '')
+            v = v.replace(new RegExp(/ *\[^)]*\ */, 'g'), `(not set)`).replace(new RegExp('\\$', 'g'), '')
+        }
+        return v
+    }
+    function parseKeyValue(obj) {
+        if (typeof obj !== 'object') {
+            obj = parseVariables(obj)
+        } else {
+            Object.keys(obj).map(function (k, i) {
+                if (typeof obj[k] === 'string') {
+                    obj[k] = parseVariables(obj[k])
+                } else if (Array.isArray(obj)) {
+                    obj[i] = parseKeyValue(obj[i])
+                } else if (typeof obj[k] === 'object') obj[k] = parseKeyValue(obj[k])
+            })
+        }
+        return obj
+    }
+    return parseKeyValue(template)
+}
+function objectMerges(...sources) {
+    let acc = {}
+    for (const source of sources) {
+        if (source instanceof Array) {
+            if (!(acc instanceof Array)) {
+                acc = []
+            }
+            acc = [...acc, ...source]
+        } else if (source instanceof Object) {
+            for (let [key, value] of Object.entries(source)) {
+                if (value instanceof Object && key in acc) {
+                    value = objectMerges(acc[key], value)
+                }
+                acc = { ...acc, [key]: value }
+            }
+        }
+    }
+    return acc
+}
+
+function parseIncludes(yamlObject) {
+    return new Promise((resolve, reject) => {
+        let stages = [...yamlObject.stages]
+        let variables = { ...yamlObject.variables }
+        if (yamlObject.include) {
+            let remoteUrls = []
+            yamlObject.include.map(item => {
+                if (item.local) {
+                    if (fs.existsSync(path.resolve(item.local))) {
+                        const ymlObj = fs.readFileSync(path.resolve(item.local)).toString()
+                        const includedObj = YAML.parse(ymlObj)
+                        yamlObject = { ...yamlObject, ...includedObj }
+                        if (includedObj.stages) {
+                            stages = [...stages, ...includedObj.stages]
+                        }
+                        if (includedObj.variables) {
+                            variables = objectMerges(variables, includedObj.variables)
+                        }
+                    }
+                } else if (item.template) {
+                    remoteUrls.push(`https://gitlab.com/gitlab-org/gitlab/-/raw/master/lib/gitlab/ci/templates/${item.template}`)
+                } else if (item.remote) {
+                    remoteUrls.push(item.remote)
+                } else if (typeof item === 'object') {
+                    /** project ref: { file, project, ref } */
+                    if (Array.isArray(item.file)) {
+                        item.file.map(file => remoteUrls.push(`https://gitlab.com/${item.project}/-/raw/${item.ref}/${file}`))
+                    } else {
+                        remoteUrls.push(`https://gitlab.com/${item.project}/-/raw/${item.ref}/${item.file}`)
+                    }
+                }
+            })
+            /** fetching templates from remoteUrls... */
+            if (remoteUrls.length > 0) {
+                Promise.all(remoteUrls.map((url) => fetch(url))).then((responses) => {
+                    return Promise.all(responses.map((res) => res.text())).then((buffers) => {
+                        return buffers.map((buffer) => {
+                            return YAML.parse(buffer)
+                        });
+                    });
+                }).then((finalObjects) => {
+                    yamlObject.stages = [...new Set(stages)]
+                    finalObjects.map(m => {
+                        if (m.stages) {
+                            stages = [...stages, ...m.stages]
+                        }
+                        if (m.variables) {
+                            variables = objectMerges(variables, m.variables)
+                        }
+                        yamlObject = { ...yamlObject, ...m }
+                    })
+                    yamlObject.stages = [...new Set(stages)]
+                    yamlObject.variables = variables
+                    resolve(yamlObject)
+                });
+            } else {
+                yamlObject.stages = [...new Set(stages)]
+                yamlObject.variables = variables
+                resolve(yamlObject)
+            }
+        } else {
+            resolve(yamlObject)
+        }
+    })
+}
+
+const yamlProcessor = function (yamlObject) {
     if (cmdOPS == 'CREATE') {
         if (!optCMD) {
             index = readlineSync.keyInSelect(yamlObject.stages, `Select a stage to execute ?`, {
@@ -140,7 +222,7 @@ const yamlProcessor = function (result) {
             dockerComposeContent.volumes[`${getVolumeName(projectName)}`] = { external: true }
             let stageExecutionChains = []
             let dockerCacheVolumes = []
-            let dockerBaseContent = [`FROM ${yamlObject.image}`, 'WORKDIR /source', 'VOLUME /data', 'COPY . /source', 'CMD ls -la /source']
+            let dockerBaseContent = [`FROM ${getImageName(yamlObject.image)}`, 'WORKDIR /source', 'VOLUME /data', 'COPY . /source', 'CMD ls -la /source']
             let dockerBasePath = `${projectName}/Dockerfile`
             const baseImage = `base-${yamlObject.image.split(':')[0]}`
             const baseDirName = path.dirname(path.resolve(dockerBasePath))
@@ -156,58 +238,59 @@ const yamlProcessor = function (result) {
 
             dockerComposeContent.services = {} /** reset docker-compose services section */
             delete dockerComposeContent.volumes /** remove docker-compose volumes section */
-            const variables = simplify.getContentArgs(yamlObject.variables || {}, { ...process.env })
+            let variables = getContentArgs(yamlObject.variables || {}, { ...process.env })
+            function parseScriptContent(scriptLine, dockerCommands, dockerfileContent, service, localVariables) {
+                let scriptContent = scriptLine.startsWith('set ') ? scriptLine : getContentArgs(scriptLine, { ...process.env }, { ...localVariables })
+                if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
+                    let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
+                    scriptContent = scriptContent.replace('export ', '').replace('set ', '')
+                    const argKeyValue = scriptContent.split('=')
+                    service.build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
+                    scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
+                    dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
+                } else {
+                    dockerCommands.push(`${scriptContent}`)
+                }
+            }
             Object.keys(yamlObject).map((key, idx) => {
-                if (yamlObject[key].stage === executedStage) {
+                if (yamlObject[key].extends) {
+                    if (Array.isArray(yamlObject[key].extends)) {
+                    } else {
+                        yamlObject[yamlObject[key].extends].disabled = false
+                        yamlObject[key] = { ...yamlObject[yamlObject[key].extends], ...yamlObject[key] }
+                        yamlObject[yamlObject[key].extends].disabled = true
+                    }
+                }
+                let localVariables = getContentArgs(yamlObject[key].variables || {}, variables)
+                yamlObject[key].secrets && Object.keys(yamlObject[key].secrets).map(secret => {
+                    localVariables[secret] = "${" + secret + "}"
+                })
+                localVariables = objectMerges(variables, localVariables) /** merge global variables with local variables */
+                if (yamlObject[key].stage === executedStage && !yamlObject[key].disabled && !key.startsWith('.')) {
                     const stageName = `${idx}-${executedStage}.${key}`
                     dockerComposeContent.services[key] = { build: { context: `../`, dockerfile: `${projectName}/${stageName}.Dockerfile`, args: {} }, volumes: [`${getVolumeName(projectName)}:/data`] }
                     stageExecutionChains.push(`${stageName}`)
-                    dockerfileContent = [`FROM ${projectName.replace(/\./g, '')}_${baseImage}`, 'WORKDIR /source']
+                    const localImage = `${yamlObject[key].image ? getContentArgs({ image: getImageName(yamlObject[key].image) }, localVariables).image : `${projectName.replace(/\./g, '')}_${baseImage}`}`
+                    dockerfileContent = [`FROM ${localImage}`, 'WORKDIR /source']
                     yamlObject[key].dependencies && yamlObject[key].dependencies.map(deps => {
                         dockerfileContent.push(`FROM ${projectName.replace(/\./g, '')}_${deps}`)
                     })
                     let dockerCommands = []
                     let dockerBeforeCommands = []
                     let dockerAfterCommands = []
-                    yamlObject[key].before_script && yamlObject[key].before_script.map(script => {
-                        let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
-                        if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
-                            let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
-                            scriptContent = scriptContent.replace('export ', '').replace('set ', '')
-                            const argKeyValue = scriptContent.split('=')
-                            dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
-                            scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
-                            dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
-                        } else {
-                            dockerBeforeCommands.push(`${scriptContent}`)
-                        }
+                    /**
+                     * extends - inherit from another stage
+                     * services - run another docker inside the build image
+                     * needs - to execute jobs out-of-order (depend on other jobs)
+                     */
+                    yamlObject[key].before_script && yamlObject[key].before_script.map(scriptLine => {
+                        parseScriptContent(scriptLine, dockerBeforeCommands, dockerfileContent, dockerComposeContent.services[key], localVariables)
                     })
-
-                    yamlObject[key].script && yamlObject[key].script.map(script => {
-                        let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
-                        if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
-                            let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
-                            scriptContent = scriptContent.replace('export ', '').replace('set ', '')
-                            const argKeyValue = scriptContent.split('=')
-                            dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
-                            scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
-                            dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
-                        } else {
-                            dockerCommands.push(`${scriptContent}`)
-                        }
+                    yamlObject[key].script && yamlObject[key].script.map(scriptLine => {
+                        parseScriptContent(scriptLine, dockerCommands, dockerfileContent, dockerComposeContent.services[key], localVariables)
                     })
-                    yamlObject[key].after_script && yamlObject[key].after_script.map(script => {
-                        let scriptContent = script.startsWith('set ') ? script : simplify.getContentArgs(script, { ...process.env }, { ...variables })
-                        if (scriptContent.startsWith('export ') || scriptContent.startsWith('set ')) {
-                            let dockerOpts = scriptContent.startsWith('set ') ? 'ARG' : 'ENV'
-                            scriptContent = scriptContent.replace('export ', '').replace('set ', '')
-                            const argKeyValue = scriptContent.split('=')
-                            dockerComposeContent.services[key].build.args[`${argKeyValue[0].trim()}`] = `${argKeyValue[1].trim()}`
-                            scriptContent = `${argKeyValue[0].trim()}="${argKeyValue[1].trim()}"`
-                            dockerfileContent.push(`${dockerOpts} ${scriptContent}`)
-                        } else {
-                            dockerAfterCommands.push(`${scriptContent}`)
-                        }
+                    yamlObject[key].after_script && yamlObject[key].after_script.map(scriptLine => {
+                        parseScriptContent(scriptLine, dockerAfterCommands, dockerfileContent, dockerComposeContent.services[key], localVariables)
                     })
 
                     dockerBeforeCommands.length && dockerfileContent.push(`RUN ${dockerBeforeCommands.join(' && ')}`)
@@ -218,6 +301,7 @@ const yamlProcessor = function (result) {
                     if (!fs.existsSync(pathDirName)) {
                         fs.mkdirSync(pathDirName, { recursive: true })
                     }
+                    dockerfileContent = getContentArgs(dockerfileContent, localVariables)
                     fs.writeFileSync(dockerfilePath, dockerfileContent.join('\n'))
                 }
             })
@@ -233,8 +317,9 @@ const yamlProcessor = function (result) {
                 `   docker volume create --driver local --opt type=none --opt device=$PWD --opt o=bind ${getVolumeName(projectName)};`,
                 `fi`,
                 `if [ $? -eq 0 ]; then`,
-                `   if [ -z "$1" ]; then echo "Missing argument: require stage argument to run - ex bash pipeline.sh build";`,
-                `   else docker-compose -f docker-compose.yml -f docker-compose.$1.yml --project-name ${projectName} build; fi`,
+                `   if [ -z "$1" ]; then echo "Missing argument: require stage argument to run - (ex bash pipeline.sh build [service])";`,
+                `   elif [ -z "$2" ]; then echo "Missing argument: require stage argument to run - (ex bash pipeline.sh build eslint-sast)";`,
+                `   else docker-compose -f docker-compose.yml -f docker-compose.$1.yml --project-name ${projectName} build $2; fi`,
                 `fi`
             ].join('\n'))
         }
