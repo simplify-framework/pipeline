@@ -36,9 +36,6 @@ sast:
   # see https://gitlab.com/gitlab-org/gitlab/-/issues/218444
   script:
     - /analyzer run
-    - if [ "`which node | grep '/bin/node$'`" == "" ]; then apk add nodejs npm; fi
-    - if [ "$SAST_FAILURE_ALLOWED" == "false" ]; then npm install simplify-security; fi
-    - if [ "$SAST_FAILURE_ALLOWED" == "false" ]; then node node_modules/simplify-security/entrypoint.js report -i gl-sast-report.json; fi
 
 eslint-sast:
   extends: .sast-analyzer

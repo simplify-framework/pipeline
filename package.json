@@ -27,6 +27,7 @@
     "dotenv": "^8.2.0",
     "readline-sync": "^1.4.10",
     "simplify-sdk": "^0.1.52",
+    "simplify-security": "^0.1.14",
     "uuid": "^8.3.1",
     "yaml": "^1.10.2",
     "yargs": "^15.4.1"

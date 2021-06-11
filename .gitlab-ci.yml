@@ -4,6 +4,9 @@ stages:
   - build
   - test
 
+variables:
+  ESLINT_FAILURE_ALLOWED: "false"
+  
 include:
   - local: Security/SAST.gitlab-ci.yml
   - template: Security/DAST.gitlab-ci.yml
