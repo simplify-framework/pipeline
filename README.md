@@ -38,11 +38,12 @@ simplify-pipeline -f .gitlab-ci.yml list
 Run the `build` stage:
 ```bash
 simplify-pipeline -f .gitlab-ci.yml create build
-bash pipeline.sh build
+bash pipeline.sh build package-build
 ```
 
 Run the `test` stage:
 ```bash
 simplify-pipeline -f .gitlab-ci.yml create test
-bash pipeline.sh build
+bash pipeline.sh test package-test
+
 ```

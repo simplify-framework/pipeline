@@ -3,3 +3,4 @@
 !.github
 .simplify-pipeline
 node_modules/
+pipeline.sh
